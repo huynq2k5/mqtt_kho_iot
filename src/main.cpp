@@ -115,11 +115,19 @@ void TaskMQTT(void *pvParameters) {
   for (;;) {
     if (!client.connected()) {
       Serial.print("[SYSTEM] MQTT Lost. Reconnecting...");
-      if (client.connect("ESP32_TB01", mqtt_user, mqtt_password)) {
+      
+      // --- SỬA TẠI ĐÂY: Thêm tham số Last Will ---
+      // Cấu trúc: connect(id, user, pass, willTopic, willQos, willRetain, willMessage)
+      const char* willTopic = "kho_iot/TB01/status";
+      const char* billMsg = "{\"s\":0}"; // Bản tin di chúc báo Offline
+      
+      if (client.connect("ESP32_TB01", mqtt_user, mqtt_password, willTopic, 1, true, billMsg)) {
         Serial.println(" Success!");
         client.subscribe(config_topic);
         client.subscribe(control_topic);
-		client.subscribe(mode_topic);
+        client.subscribe(mode_topic);
+        
+        // Sau khi kết nối xong, báo ngay trạng thái Online (s=1)
         publishState(dht.readTemperature(), dht.readHumidity());
       } else {
         Serial.println(" Failed.");
