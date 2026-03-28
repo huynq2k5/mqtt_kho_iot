@@ -48,10 +48,16 @@ void publishState(float t, float h) {
   doc["fan"] = statusFan ? 1 : 0;
   doc["ac"] = statusAC ? 1 : 0;
   doc["hum"] = statusHum ? 1 : 0;
-  
+  doc["s"] = 1; // Báo hiệu Online
+
   char buffer[256];
   serializeJson(doc, buffer);
+  
+  // Gửi cho Base Topic (Dữ liệu)
   client.publish(base_topic, buffer);
+  
+  // Gửi cho Status Topic (Để Web cập nhật nút bấm và LWT)
+  client.publish("kho_iot/TB01/status", buffer);
 
   Serial.printf("[MQTT] Published State: T:%.2f, H:%.2f, F:%d, A:%d, H:%d\n", t, h, statusFan, statusAC, statusHum);
 }
