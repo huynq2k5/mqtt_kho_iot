@@ -23,6 +23,8 @@ bool systemManual = false; // Cờ chế độ toàn cục
 #define RELAY_HUM 16
 #define DHTPIN 12
 #define DHTTYPE DHT22
+#define LDR_PIN 35
+#define CO2_PIN 36
 
 DHT dht(DHTPIN, DHTTYPE);
 WiFiClientSecure espClient;
@@ -36,30 +38,30 @@ struct KichBan {
 KichBan dsKichBan[5];
 int soLuongKichBan = 0;
 float lastT = 0, lastH = 0;
+float lastCO2 = 0, lastLux = 0;
 bool statusFan = false, statusAC = false, statusHum = false;
 bool manualMode[3] = {false, false, false}; 
 
 SemaphoreHandle_t xMutex;
 
-void publishState(float t, float h) {
+void publishState(float t, float h, float co2, float lux) {
   StaticJsonDocument<256> doc;
   doc["t"] = t;
   doc["h"] = h;
+  doc["co2"] = co2;
+  doc["as"] = lux;
   doc["fan"] = statusFan ? 1 : 0;
   doc["ac"] = statusAC ? 1 : 0;
   doc["hum"] = statusHum ? 1 : 0;
-  doc["s"] = 1; // Báo hiệu Online
+  doc["s"] = 1;
 
   char buffer[256];
   serializeJson(doc, buffer);
   
-  // Gửi cho Base Topic (Dữ liệu)
   client.publish(base_topic, buffer);
-  
-  // Gửi cho Status Topic (Để Web cập nhật nút bấm và LWT)
   client.publish("kho_iot/TB01/status", buffer);
 
-  Serial.printf("[MQTT] Published State: T:%.2f, H:%.2f, F:%d, A:%d, H:%d\n", t, h, statusFan, statusAC, statusHum);
+  Serial.printf("[MQTT] Published: T:%.2f, H:%.2f, CO2:%.2f, LUX:%.2f\n", t, h, co2, lux);
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -72,7 +74,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     String mode = doc["mode"];
     systemManual = (mode == "MANUAL");
     Serial.printf("[SYSTEM] Mode changed to: %s\n", mode.c_str());
-    return; // Thoát sớm
+    return; 
   }
 
   if (top == config_topic) {
@@ -93,7 +95,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
         dsKichBan[i].hanhDong = (v["act"] == "ON") ? 1 : 0;
       }
       xSemaphoreGive(xMutex);
-      Serial.printf("[CONFIG] Applied %d rules. Manual override reset.\n", soLuongKichBan);
+      Serial.printf("[CONFIG] Applied %d rules.\n", soLuongKichBan);
       client.publish(ack_topic, "{\"status\":\"rules_applied\"}");
     }
   } 
@@ -106,7 +108,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
         else if (device == "a") { statusAC = act; digitalWrite(RELAY_AC, act); }
         else if (device == "h") { statusHum = act; digitalWrite(RELAY_HUM, act); }
         
-        publishState(dht.readTemperature(), dht.readHumidity());
+        // SỬA LỖI 1: Thêm đủ 4 tham số (đọc giá trị hiện tại của CO2/LDR)
+        publishState(dht.readTemperature(), dht.readHumidity(), analogRead(CO2_PIN), analogRead(LDR_PIN));
     }
   }
 }
@@ -128,7 +131,7 @@ void TaskMQTT(void *pvParameters) {
         client.subscribe(mode_topic);
         
         // Sau khi kết nối xong, báo ngay trạng thái Online (s=1)
-        publishState(dht.readTemperature(), dht.readHumidity());
+        publishState(dht.readTemperature(), dht.readHumidity(), analogRead(CO2_PIN), analogRead(LDR_PIN));
       } else {
         Serial.println(" Failed.");
         vTaskDelay(30000 / portTICK_PERIOD_MS); 
@@ -148,54 +151,53 @@ void TaskLogic(void *pvParameters) {
   for (;;) {
     float t = dht.readTemperature();
     float h = dht.readHumidity();
+    float co2 = (float)analogRead(CO2_PIN);
+    float lux = (float)analogRead(LDR_PIN);
 
     if (!isnan(t) && !isnan(h)) {
       bool coThayDoi = false;
-
-      if (abs(t - lastT) > 0.5 || abs(h - lastH) > 2.0) {
+      if (abs(t - lastT) > 0.5 || 
+          abs(h - lastH) > 2.0 || 
+          abs(co2 - lastCO2) > 50.0 ||  
+          abs(lux - lastLux) > 100.0) { 
+        
         coThayDoi = true;
         lastT = t; 
         lastH = h;
+        lastCO2 = co2; 
+        lastLux = lux; 
       }
 
       if (xSemaphoreTake(xMutex, portMAX_DELAY)) {
         if(!systemManual){
-			bool nextFan = false; 
-			bool nextAC = false; 
-			bool nextHum = false;
+            bool nextFan = false; bool nextAC = false; bool nextHum = false;
+            for (int i = 0; i < soLuongKichBan; i++) {
+              bool trigger = false;
+              float val = 0;
+              if (dsKichBan[i].kieuVao == "t") val = t;
+              else if (dsKichBan[i].kieuVao == "h") val = h;
+              else if (dsKichBan[i].kieuVao == "as") val = lux;
+              else if (dsKichBan[i].kieuVao == "co2") val = co2;
 
-			for (int i = 0; i < soLuongKichBan; i++) {
-			  bool trigger = false;
-			  float val = (dsKichBan[i].kieuVao == "t") ? t : h;
-			  if (dsKichBan[i].phepSoSanh == ">") trigger = (val > dsKichBan[i].nguong);
-			  else if (dsKichBan[i].phepSoSanh == "<") trigger = (val < dsKichBan[i].nguong);
+              if (dsKichBan[i].phepSoSanh == ">") trigger = (val > dsKichBan[i].nguong);
+              else if (dsKichBan[i].phepSoSanh == "<") trigger = (val < dsKichBan[i].nguong);
 
-			  if (trigger) {
-				if (dsKichBan[i].chanRa == RELAY_FAN) nextFan = (dsKichBan[i].hanhDong == 1);
-				if (dsKichBan[i].chanRa == RELAY_AC) nextAC = (dsKichBan[i].hanhDong == 1);
-				if (dsKichBan[i].chanRa == RELAY_HUM) nextHum = (dsKichBan[i].hanhDong == 1);
-			  }
-			}
+              if (trigger) {
+                if (dsKichBan[i].chanRa == RELAY_FAN) nextFan = (dsKichBan[i].hanhDong == 1);
+                if (dsKichBan[i].chanRa == RELAY_AC) nextAC = (dsKichBan[i].hanhDong == 1);
+                if (dsKichBan[i].chanRa == RELAY_HUM) nextHum = (dsKichBan[i].hanhDong == 1);
+              }
+            }
 
-			if (manualMode[0]) nextFan = statusFan;
-			if (manualMode[1]) nextAC = statusAC;
-			if (manualMode[2]) nextHum = statusHum;
-
-			if (nextFan != statusFan || nextAC != statusAC || nextHum != statusHum) {
-			  coThayDoi = true;
-			  statusFan = nextFan; 
-			  statusAC = nextAC; 
-			  statusHum = nextHum;
-			  digitalWrite(RELAY_FAN, statusFan);
-			  digitalWrite(RELAY_AC, statusAC);
-			  digitalWrite(RELAY_HUM, statusHum);
-			}
-
-			if (coThayDoi) {
-			  publishState(t, h);
-			}
-			xSemaphoreGive(xMutex);
-		}
+            if (nextFan != statusFan || nextAC != statusAC || nextHum != statusHum || coThayDoi) {
+              statusFan = nextFan; statusAC = nextAC; statusHum = nextHum;
+              digitalWrite(RELAY_FAN, statusFan);
+              digitalWrite(RELAY_AC, statusAC);
+              digitalWrite(RELAY_HUM, statusHum);
+              publishState(t, h, co2, lux);
+            }
+        }
+        xSemaphoreGive(xMutex); // ĐƯA RA NGOÀI IF systemManual
       }
     }
     vTaskDelay(5000 / portTICK_PERIOD_MS);
@@ -217,10 +219,14 @@ void setup() {
   Serial.println(" Connected!");
   
   espClient.setInsecure();
+  client.setBufferSize(512);
+  
   client.setServer(mqtt_broker, mqtt_port);
+  client.setKeepAlive(15); 
+  client.setBufferSize(1024); 
   client.setCallback(callback);
 
-  xTaskCreatePinnedToCore(TaskMQTT, "TaskMQTT", 8192, NULL, 2, NULL, 0); 
+  xTaskCreatePinnedToCore(TaskMQTT, "TaskMQTT", 10240, NULL, 2, NULL, 0); 
   xTaskCreatePinnedToCore(TaskLogic, "TaskLogic", 4096, NULL, 1, NULL, 1);
 }
 
