@@ -11,6 +11,9 @@ const char* mqtt_user = "huyng";
 const char* mqtt_password = "Huy12345";
 const int mqtt_port = 8883;
 
+const float GAMMA = 0.7;
+const float RL10 = 50;
+
 const char* base_topic = "kho_iot/TB01";           
 const char* config_topic = "kho_iot/kichban/TB01"; 
 const char* mode_topic = "kho_iot/system/mode";
@@ -23,7 +26,7 @@ bool systemManual = false; // Cờ chế độ toàn cục
 #define RELAY_HUM 16
 #define DHTPIN 12
 #define DHTTYPE DHT22
-#define LDR_PIN 35
+#define LDR_PIN 34
 #define CO2_PIN 36
 
 DHT dht(DHTPIN, DHTTYPE);
@@ -43,6 +46,17 @@ bool statusFan = false, statusAC = false, statusHum = false;
 bool manualMode[3] = {false, false, false}; 
 
 SemaphoreHandle_t xMutex;
+
+float docGiaTriLux() {
+  int giaTriAnalog = analogRead(LDR_PIN); 
+  if (giaTriAnalog == 0) return 0; 
+  
+  float dienAp = giaTriAnalog * 3.3 / 4095.0;
+  float dienTroLdr = 10000 * dienAp / (3.3 - dienAp);
+  float giaTriLux = pow(RL10 * 1e3 * pow(10, GAMMA) / dienTroLdr, (1 / GAMMA));
+  
+  return giaTriLux;
+}
 
 void publishState(float t, float h, float co2, float lux) {
   StaticJsonDocument<256> doc;
@@ -108,8 +122,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
         else if (device == "a") { statusAC = act; digitalWrite(RELAY_AC, act); }
         else if (device == "h") { statusHum = act; digitalWrite(RELAY_HUM, act); }
         
-        // SỬA LỖI 1: Thêm đủ 4 tham số (đọc giá trị hiện tại của CO2/LDR)
-        publishState(dht.readTemperature(), dht.readHumidity(), analogRead(CO2_PIN), analogRead(LDR_PIN));
+        // SỬA LỖI 1: Thêm đủ 4 tham số (đọc giá trị hiện tại của CO2/LDR)analogRead
+        publishState(dht.readTemperature(), dht.readHumidity(), analogRead(CO2_PIN), docGiaTriLux());
     }
   }
 }
@@ -131,7 +145,7 @@ void TaskMQTT(void *pvParameters) {
         client.subscribe(mode_topic);
         
         // Sau khi kết nối xong, báo ngay trạng thái Online (s=1)
-        publishState(dht.readTemperature(), dht.readHumidity(), analogRead(CO2_PIN), analogRead(LDR_PIN));
+        publishState(dht.readTemperature(), dht.readHumidity(), analogRead(CO2_PIN), docGiaTriLux());
       } else {
         Serial.println(" Failed.");
         vTaskDelay(30000 / portTICK_PERIOD_MS); 
@@ -152,7 +166,7 @@ void TaskLogic(void *pvParameters) {
     float t = dht.readTemperature();
     float h = dht.readHumidity();
     float co2 = (float)analogRead(CO2_PIN);
-    float lux = (float)analogRead(LDR_PIN);
+    float lux = docGiaTriLux();
 
     if (!isnan(t) && !isnan(h)) {
       bool coThayDoi = false;
@@ -200,7 +214,7 @@ void TaskLogic(void *pvParameters) {
         xSemaphoreGive(xMutex); // ĐƯA RA NGOÀI IF systemManual
       }
     }
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
   }
 }
 
