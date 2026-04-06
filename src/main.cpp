@@ -91,7 +91,10 @@ void publishState(float t, float h, float co2, float lux) {
   client.publish(base_topic, buffer);
   client.publish("kho_iot/TB01/status", buffer);
 
-  Serial.printf("[MQTT] Published: T:%.2f, H:%.2f, CO2:%.2f, LUX:%.2f\n", t, h, co2, lux);
+  Serial.print("[MQTT] Đã gửi: T:"); Serial.print(t);
+  Serial.print(", H:"); Serial.print(h);
+  Serial.print(", CO2:"); Serial.print(co2);
+  Serial.print(", LUX:"); Serial.println(lux);
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -103,12 +106,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
   if (top == mode_topic) {
     String mode = doc["mode"];
     systemManual = (mode == "MANUAL");
-    Serial.printf("[SYSTEM] Mode changed to: %s\n", mode.c_str());
+    Serial.print("[SYSTEM] Che đo hien tai: ");
+    Serial.println(mode);
     return; 
   }
 
   if (top == config_topic) {
-    Serial.println("[CONFIG] Received new sensor rules...");
+    Serial.println("[CONFIG] Đang nhan kich ban");
     if (xSemaphoreTake(xMutex, portMAX_DELAY)) {
       for(int i=0; i<3; i++) manualMode[i] = false; 
       JsonArray rules = doc["data"].as<JsonArray>();
@@ -126,7 +130,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
         dsKichBan[i].hanhDong = (v["act"] == "ON") ? 1 : 0;
       }
       xSemaphoreGive(xMutex);
-      Serial.printf("[CONFIG] Applied %d rules.\n", soLuongKichBan);
+      Serial.print("[CONFIG] Da ap dung "); 
+      Serial.print(soLuongKichBan); 
+      Serial.println(" kich ban.");
       client.publish(ack_topic, "{\"status\":\"rules_applied\"}");
     }
   } 
@@ -150,10 +156,8 @@ void TaskMQTT(void *pvParameters) {
     if (!client.connected()) {
       Serial.print("[SYSTEM] MQTT Lost. Reconnecting...");
       
-      // --- SỬA TẠI ĐÂY: Thêm tham số Last Will ---
-      // Cấu trúc: connect(id, user, pass, willTopic, willQos, willRetain, willMessage)
       const char* willTopic = "kho_iot/TB01/status";
-      const char* billMsg = "{\"s\":0}"; // Bản tin di chúc báo Offline
+      const char* billMsg = "{\"s\":0}";
       
       if (client.connect("ESP32_TB01", mqtt_user, mqtt_password, willTopic, 1, true, billMsg)) {
         Serial.println(" Success!");
@@ -231,7 +235,7 @@ void TaskLogic(void *pvParameters) {
               publishState(t, h, co2, lux);
             }
         }
-        xSemaphoreGive(xMutex); // ĐƯA RA NGOÀI IF systemManual
+        xSemaphoreGive(xMutex);
       }
     }
     vTaskDelay(3000 / portTICK_PERIOD_MS);
